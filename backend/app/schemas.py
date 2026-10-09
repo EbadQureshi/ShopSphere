@@ -1,7 +1,13 @@
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_serializer, field_validator
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    if value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 class Register(BaseModel):
     name: str
@@ -87,6 +93,7 @@ class OrderOut(BaseModel):
     model_config = {"from_attributes": True}
 
 class ChatRequest(BaseModel):
+    session_id: int
     message: str = Field(min_length=1, max_length=2000)
 
     @field_validator("message", mode="before")
@@ -101,8 +108,24 @@ class ChatMessageOut(BaseModel):
     created_at: datetime
     model_config = {"from_attributes": True}
 
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> datetime:
+        return _utc_datetime(value)
+
 class ChatHistoryOut(BaseModel):
     messages: list[ChatMessageOut]
+
+class ChatSessionOut(BaseModel):
+    id: int
+
+class ChatSessionSummaryOut(BaseModel):
+    id: int
+    preview: str
+    updated_at: datetime
+
+    @field_serializer("updated_at")
+    def serialize_updated_at(self, value: datetime) -> datetime:
+        return _utc_datetime(value)
 
 class ChatProductOut(BaseModel):
     id: int

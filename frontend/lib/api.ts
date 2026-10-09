@@ -38,6 +38,8 @@ type ChatReply={
  messages:{id:number;role:"user"|"assistant";content:string;created_at:string}[];
  products:ChatProduct[];
 };
+export type ChatSession={id:number};
+export type ChatSessionSummary={id:number;preview:string;updated_at:string};
 async function req<T>(path:string,options:RequestInit={}):Promise<T>{
  const token=getSessionToken();
  const headers=new Headers(options.headers);
@@ -59,7 +61,12 @@ export const api={
  register:(d:any)=>req<any>("/auth/register",{method:"POST",body:JSON.stringify(d)}),
  me:()=>req<{id:number;name:string;email:string;is_admin:boolean}>("/auth/me"),
  chatHistory:()=>req<{messages:{id:number;role:"user"|"assistant";content:string;created_at:string}[]}>("/chat/history"),
- chat:(message:string)=>req<ChatReply>("/chat",{method:"POST",body:JSON.stringify({message})}),
+ createChatSession:()=>req<ChatSession>("/chat/sessions",{method:"POST"}),
+ chatSessions:()=>req<ChatSessionSummary[]>("/chat/sessions"),
+ chatSessionHistory:(sessionId:number)=>req<{messages:{id:number;role:"user"|"assistant";content:string;created_at:string}[]}>(
+  `/chat/sessions/${sessionId}`
+ ),
+ chat:(sessionId:number,message:string)=>req<ChatReply>("/chat",{method:"POST",body:JSON.stringify({session_id:sessionId,message})}),
  cart:()=>req<any>("/cart"),
  add:(product_id:number,quantity=1)=>req<any>("/cart/items",{method:"POST",body:JSON.stringify({product_id,quantity})}),
  remove:(id:number)=>req<any>(`/cart/items/${id}`,{method:"DELETE"}),

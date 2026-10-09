@@ -5,17 +5,17 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from groq import GroqError
 from jose import jwt, JWTError
 from slugify import slugify
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.core.security import hash_password, verify_password, token_for
 from app.db.session import get_db
-from app.models import User, Category, Product, Cart, CartItem, Order, OrderItem, ChatMessage
+from app.models import User, Category, Product, Cart, CartItem, Order, OrderItem, ChatMessage, ChatSession
 from app.recommendations import category_family, rank_related_products
 from app.schemas import *
 from app.chatbot import (
     generate_answer,
-    get_or_create_chat_session,
+    retrieval_query,
     retrieve_products,
     sync_product_index,
 )
@@ -74,15 +74,101 @@ def me(user: User = Depends(current_user)): return user
 
 @router.get("/chat/history", response_model=ChatHistoryOut)
 def chat_history(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    chat_session = get_or_create_chat_session(db, user.id)
-    return ChatHistoryOut(messages=chat_session.messages)
+    chat_session = db.scalar(
+        select(ChatSession)
+        .where(ChatSession.user_id == user.id)
+        .order_by(ChatSession.created_at.desc(), ChatSession.id.desc())
+    )
+    return ChatHistoryOut(messages=chat_session.messages if chat_session else [])
+
+@router.post("/chat/sessions", response_model=ChatSessionOut)
+def create_chat_session(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    chat_session = ChatSession(user_id=user.id)
+    db.add(chat_session)
+    db.commit()
+    db.refresh(chat_session)
+    return ChatSessionOut(id=chat_session.id)
+
+@router.get("/chat/sessions", response_model=list[ChatSessionSummaryOut])
+def chat_sessions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    preview = (
+        select(ChatMessage.content)
+        .where(
+            ChatMessage.session_id == ChatSession.id,
+            ChatMessage.role == "user",
+        )
+        .order_by(ChatMessage.id)
+        .limit(1)
+        .scalar_subquery()
+    )
+    last_activity = (
+        select(func.max(ChatMessage.created_at))
+        .where(ChatMessage.session_id == ChatSession.id)
+        .scalar_subquery()
+    )
+    rows = db.execute(
+        select(
+            ChatSession.id,
+            preview.label("preview"),
+            func.coalesce(last_activity, ChatSession.created_at).label("updated_at"),
+        )
+        .where(ChatSession.user_id == user.id)
+        .where(
+            select(ChatMessage.id)
+            .where(ChatMessage.session_id == ChatSession.id)
+            .exists()
+        )
+        .order_by(
+            func.coalesce(last_activity, ChatSession.created_at).desc(),
+            ChatSession.id.desc(),
+        )
+    )
+    return [
+        ChatSessionSummaryOut(
+            id=row.id,
+            preview=(row.preview or "New conversation")[:120],
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+@router.get("/chat/sessions/{session_id}", response_model=ChatHistoryOut)
+def chat_session_history(
+    session_id: int,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    chat_session = db.scalar(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.user_id == user.id,
+        )
+    )
+    if chat_session is None:
+        raise HTTPException(404, "Chat session not found.")
+    messages = list(
+        db.scalars(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == chat_session.id)
+            .order_by(ChatMessage.created_at, ChatMessage.id)
+        )
+    )
+    return ChatHistoryOut(messages=messages)
 
 @router.post("/chat", response_model=ChatReplyOut)
 def chat(data: ChatRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if not settings.groq_api_key.strip():
         raise HTTPException(503, "Chatbot is not configured. Set GROQ_API_KEY in backend/.env.")
 
-    chat_session = get_or_create_chat_session(db, user.id)
+    chat_session = db.scalar(
+        select(ChatSession).where(
+            ChatSession.id == data.session_id,
+            ChatSession.user_id == user.id,
+        )
+    )
+    if chat_session is None:
+        raise HTTPException(404, "Chat session not found.")
+
     history = list(
         db.scalars(
             select(ChatMessage)
@@ -90,12 +176,10 @@ def chat(data: ChatRequest, user: User = Depends(current_user), db: Session = De
             .order_by(ChatMessage.created_at, ChatMessage.id)
         )
     )
-    retrieval_query = "\n".join(
-        [message.content for message in history[-4:]] + [data.message]
-    )
+    product_query = retrieval_query(data.message, history)
     try:
         collection = sync_product_index(db)
-        product_documents, product_ids = retrieve_products(collection, retrieval_query)
+        product_documents, product_ids = retrieve_products(collection, product_query)
         products = list(
             db.scalars(
                 select(Product)

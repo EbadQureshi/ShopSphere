@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "dev": "npm --prefix frontend run dev"
+  },
   "dependencies": {
     "dotenv": "^18.0.6"
   }
