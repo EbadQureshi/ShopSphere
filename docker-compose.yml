@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16
+    container_name: shopsphere-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shopsphere
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - shopsphere_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shopsphere"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  shopsphere_pg:
